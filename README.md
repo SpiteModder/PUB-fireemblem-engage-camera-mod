@@ -2,12 +2,6 @@
 
 A camera mod for Fire Emblem Engage!
 
-## Kills stop and wait for you
-
-When a character dies the battle holds on the finishing shot instead of moving on by
-itself. The camera sits behind the one who died, looking at the winner. Press A when you
-are done looking.
-
 Bodies stay on screen too, so you can see your handywork.
 
 ![Kill camera](screenshots/kill-camera-3.jpg)
