@@ -1,0 +1,26 @@
+[package]
+name = "death_hold"
+version = "1.1.0"
+authors = ["catch"]
+edition = "2021"
+
+[package.metadata.skyline]
+titleid = "0100a6301214e000" # Fire Emblem Engage
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+skyline = { git = "https://github.com/Raytwo/skyline-rs", branch = "preview" }
+unity = { git = "https://github.com/DivineDragonFanClub/unity", default-features = false }
+nnsdk = { git = "https://github.com/ultimate-research/nnsdk-rs", rev = "9c13b526" }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+lto = true
+
+[patch.crates-io]
+nnsdk = { git = "https://github.com/ultimate-research/nnsdk-rs", rev = "9c13b526" }

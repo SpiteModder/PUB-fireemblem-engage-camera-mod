@@ -99,6 +99,23 @@ Cobalt skips any folder starting with a dot. Remove the dot to turn it back on.
 - Only battle scenes are affected. Deaths from poison, staves or story events are not.
 - Turn battle animations on, or there is no battle scene to change.
 
+## Build from source
+
+Source is in `src/lib.rs`. It is a Rust plugin built with cargo-skyline.
+
+```
+cargo install cargo-skyline
+cargo skyline build --release
+```
+
+Output lands at `target/aarch64-skyline-switch/release/libdeath_hold.nro`.
+
+Two things a fresh checkout needs to know:
+
+- The toolchain is `skyline-v3` (nightly 1.83). `cargo skyline install-toolchain` sets it up.
+- If the build fails on `hashbrown` wanting edition2024, pin indexmap:
+  `cargo update -p indexmap --precise 2.8.0`
+
 ## License
 
 MIT. Do what you like with it.
