@@ -28,6 +28,7 @@ play their own camera.
 
 Press Minus to activate free-cam. Left stick moves, right stick looks.
 Nothing is locked, you can go anywhere and point it any way.
+It follows your battle camera invert settings.
 It also freezes the game.
 
 ![Free camera](screenshots/free-camera-1.jpg)
@@ -39,11 +40,13 @@ Press Minus again to unfreeze.
 
 | Button | In a fight | While a kill is held | Free camera |
 |---|---|---|---|
-| ZR | next camera | next camera | |
-| ZL | previous camera | previous camera | |
+| ZR | next camera | next camera | zoom in |
+| ZL | previous camera | previous camera | zoom out |
 | X | back to normal camera | back to the finish shot | |
 | Minus | freeze and fly | freeze and fly | exit |
 | A | | continue | |
+| Y | | | fast or slow |
+| D-pad up / down | | | up / down |
 | Left stick | | | move |
 | Right stick | | | look |
 

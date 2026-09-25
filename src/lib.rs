@@ -6,9 +6,12 @@ use unity::prelude::*;
 
 const BUTTON_A: i64 = 1;
 const BUTTON_X: i64 = 4;
+const BUTTON_Y: i64 = 8;
 const BUTTON_ZL: i64 = 256;
 const BUTTON_ZR: i64 = 512;
 const BUTTON_MINUS: i64 = 2048;
+const BUTTON_UP: i64 = 8192;
+const BUTTON_DOWN: i64 = 32768;
 
 const WIN_CAMERAS: [i32; 3] = [1000, 1001, 1010];
 const DIE_CAMERAS: [i32; 3] = [1002, 1003, 1012];
@@ -97,6 +100,9 @@ const V2_ZERO: V2 = V2 { x: 0.0, y: 0.0 };
 #[unity::from_offset("App", "Pad", "IsTrigger")]
 pub fn pad_is_trigger(buttons: i64, method_info: OptionalMethod) -> bool;
 
+#[unity::from_offset("App", "Pad", "IsButton")]
+pub fn pad_is_button(buttons: i64, method_info: OptionalMethod) -> bool;
+
 #[unity::from_offset("App", "Pad", "GetStickLX")]
 pub fn pad_stick_lx(method_info: OptionalMethod) -> f32;
 #[unity::from_offset("App", "Pad", "GetStickLY")]
@@ -145,6 +151,40 @@ pub fn time_get_scale(method_info: OptionalMethod) -> f32;
 #[unity::from_offset("UnityEngine", "Time", "set_timeScale")]
 pub fn time_set_scale(value: f32, method_info: OptionalMethod);
 
+#[unity::from_offset("UnityEngine", "Time", "get_unscaledDeltaTime")]
+pub fn time_get_unscaled_delta(method_info: OptionalMethod) -> f32;
+
+#[unity::from_offset("UnityEngine", "Camera", "get_main")]
+pub fn camera_get_main(method_info: OptionalMethod) -> *mut u8;
+
+#[unity::from_offset("UnityEngine", "Camera", "get_fieldOfView")]
+pub fn camera_get_fov(this: *mut u8, method_info: OptionalMethod) -> f32;
+
+#[unity::from_offset("UnityEngine", "Camera", "set_fieldOfView")]
+pub fn camera_set_fov(this: *mut u8, value: f32, method_info: OptionalMethod);
+
+#[unity::from_offset("App", "GameConfig", "get_BattleCameraReverseHorizontal")]
+pub fn config_battle_reverse_horizontal(this: *const u8, method_info: OptionalMethod) -> bool;
+
+#[unity::from_offset("App", "GameConfig", "get_BattleCameraReverseVertical")]
+pub fn config_battle_reverse_vertical(this: *const u8, method_info: OptionalMethod) -> bool;
+
+#[unity::class("App", "GameConfig")]
+pub struct GameConfig {}
+
+/// GameConfig is a SingletonClass<GameConfig>: its get_Instance lives on the parent class.
+fn game_config() -> *const u8 {
+    let parent = &*GameConfig::class()._1.parent;
+    let method = match parent.get_methods().iter().find(|m| m.get_name().as_deref() == Some("get_Instance")) {
+        Some(m) => m,
+        None => return std::ptr::null(),
+    };
+    let get_instance = unsafe {
+        std::mem::transmute::<_, extern "C" fn(&unity::il2cpp::method::MethodInfo) -> *const u8>(method.method_ptr)
+    };
+    get_instance(method)
+}
+
 #[unity::from_offset("UnityEngine", "Component", "get_transform")]
 pub fn component_get_transform(this: *mut u8, method_info: OptionalMethod) -> *mut u8;
 
@@ -153,6 +193,24 @@ pub fn transform_get_position(this: *mut u8, method_info: OptionalMethod) -> V3;
 
 #[unity::from_offset("UnityEngine", "Transform", "get_eulerAngles")]
 pub fn transform_get_euler(this: *mut u8, method_info: OptionalMethod) -> V3;
+
+#[unity::from_offset("UnityEngine", "Transform", "set_position")]
+pub fn transform_set_position(this: *mut u8, value: V3, method_info: OptionalMethod);
+
+#[unity::from_offset("UnityEngine", "Transform", "set_eulerAngles")]
+pub fn transform_set_euler(this: *mut u8, value: V3, method_info: OptionalMethod);
+
+#[unity::from_offset("UnityEngine", "Component", "get_gameObject")]
+pub fn component_get_game_object(this: *mut u8, method_info: OptionalMethod) -> *mut u8;
+
+#[skyline::from_offset(0x2c4dd40)]
+pub fn game_object_get_component_by_name(this: *mut u8, type_name: &Il2CppString, method_info: OptionalMethod) -> *mut u8;
+
+#[unity::from_offset("UnityEngine", "Behaviour", "get_enabled")]
+pub fn behaviour_get_enabled(this: *mut u8, method_info: OptionalMethod) -> bool;
+
+#[unity::from_offset("UnityEngine", "Behaviour", "set_enabled")]
+pub fn behaviour_set_enabled(this: *mut u8, value: bool, method_info: OptionalMethod);
 
 unsafe fn apply_camera(switch: *mut u8, id: i32) {
     OURS.store(true, Ordering::Relaxed);
@@ -300,7 +358,12 @@ static CAM_Y: AtomicU32 = AtomicU32::new(0);
 static CAM_Z: AtomicU32 = AtomicU32::new(0);
 static CAM_YAW: AtomicU32 = AtomicU32::new(0);
 static CAM_PITCH: AtomicU32 = AtomicU32::new(0);
+static CAM_FOV: AtomicU32 = AtomicU32::new(0);
+static SAVED_FOV: AtomicU32 = AtomicU32::new(0);
 static SAVED_SCALE: AtomicU32 = AtomicU32::new(0);
+static FAST: AtomicBool = AtomicBool::new(false);
+/// Cinemachine brain switched off while free cam writes the camera itself
+static BRAIN: AtomicUsize = AtomicUsize::new(0);
 
 fn get_f32(cell: &AtomicU32) -> f32 {
     f32::from_bits(cell.load(Ordering::Relaxed))
@@ -319,9 +382,27 @@ fn wrap360(angle: f32) -> f32 {
     }
 }
 
+/// Angle in -180..180, so pitch can be clamped
+fn wrap180(angle: f32) -> f32 {
+    let wrapped = wrap360(angle);
+    if wrapped > 180.0 { wrapped - 360.0 } else { wrapped }
+}
+
+/// Stick value with the deadzone cut out and the rest rescaled, so movement starts from 0
+fn stick(value: f32) -> f32 {
+    if value.abs() < DEADZONE {
+        0.0
+    } else {
+        value.signum() * (value.abs() - DEADZONE) / (1.0 - DEADZONE)
+    }
+}
+
 const DEADZONE: f32 = 0.15;
-const MOVE_STEP: f32 = 0.12;
-const TURN_STEP: f32 = 1.8;
+const MOVE_SPEED: f32 = 3.6; // units per second
+const TURN_SPEED: f32 = 54.0; // degrees per second at the entry field of view
+const ZOOM_SPEED: f32 = 30.0; // field of view degrees per second
+const FAST_FACTOR: f32 = 3.0;
+const PITCH_LIMIT: f32 = 89.0;
 
 unsafe fn active_rig_transform() -> *mut u8 {
     let switch = CAMERA_SWITCH.load(Ordering::Relaxed) as *mut u8;
@@ -336,7 +417,8 @@ unsafe fn active_rig_transform() -> *mut u8 {
 }
 
 unsafe fn free_cam_enter() {
-    let transform = active_rig_transform();
+    let camera = camera_get_main(None);
+    let transform = if camera.is_null() { active_rig_transform() } else { component_get_transform(camera, None) };
     if transform.is_null() {
         println!("[death_hold] free cam: no camera");
         return;
@@ -348,7 +430,23 @@ unsafe fn free_cam_enter() {
     set_f32(&CAM_Y, position.y);
     set_f32(&CAM_Z, position.z);
     set_f32(&CAM_YAW, euler.y);
-    set_f32(&CAM_PITCH, euler.x);
+    set_f32(&CAM_PITCH, wrap180(euler.x).clamp(-PITCH_LIMIT, PITCH_LIMIT));
+
+    let fov = if camera.is_null() { 0.0 } else { camera_get_fov(camera, None) };
+    set_f32(&SAVED_FOV, fov);
+    set_f32(&CAM_FOV, fov);
+
+    // Cinemachine keeps steering the camera (damping, framing, shake): switch it off
+    // and write the camera directly in free_cam_drive
+    if !camera.is_null() {
+        let brain = game_object_get_component_by_name(component_get_game_object(camera, None), "CinemachineBrain".into(), None);
+        if !brain.is_null() && behaviour_get_enabled(brain, None) {
+            behaviour_set_enabled(brain, false, None);
+            BRAIN.store(brain as usize, Ordering::Relaxed);
+        } else {
+            println!("[death_hold] free cam: no Cinemachine brain on the camera");
+        }
+    }
 
     set_f32(&SAVED_SCALE, time_get_scale(None));
     time_set_scale(0.0, None);
@@ -362,6 +460,17 @@ unsafe fn free_cam_exit() {
     }
     let scale = get_f32(&SAVED_SCALE);
     time_set_scale(if scale > 0.0 { scale } else { 1.0 }, None);
+
+    let brain = BRAIN.swap(0, Ordering::Relaxed) as *mut u8;
+    if !brain.is_null() {
+        behaviour_set_enabled(brain, true, None);
+    }
+
+    let camera = camera_get_main(None);
+    let fov = get_f32(&SAVED_FOV);
+    if !camera.is_null() && fov > 0.0 {
+        camera_set_fov(camera, fov, None);
+    }
 
     let switch = CAMERA_SWITCH.load(Ordering::Relaxed) as *mut u8;
     let locked = LOCKED.load(Ordering::Relaxed);
@@ -388,22 +497,56 @@ fn free_cam_pose() -> (V3, V3) {
 }
 
 unsafe fn free_cam_drive() {
-    let deadzone = |v: f32| if v.abs() < DEADZONE { 0.0 } else { v };
-    let (lx, ly) = (deadzone(pad_stick_lx(None)), deadzone(pad_stick_ly(None)));
-    let (rx, ry) = (deadzone(pad_stick_rx(None)), deadzone(pad_stick_ry(None)));
+    // Battle time is frozen in free cam, so use unscaled time
+    let dt = time_get_unscaled_delta(None);
+    if pad_is_trigger(BUTTON_Y, None) {
+        FAST.store(!FAST.load(Ordering::Relaxed), Ordering::Relaxed);
+    }
+    let boost = if FAST.load(Ordering::Relaxed) { FAST_FACTOR } else { 1.0 };
+    let (lx, ly) = (stick(pad_stick_lx(None)), stick(pad_stick_ly(None)));
+    let (rx, ry) = (stick(pad_stick_rx(None)), stick(pad_stick_ry(None)));
 
-    let yaw = wrap360(get_f32(&CAM_YAW) + rx * TURN_STEP);
-    let pitch = wrap360(get_f32(&CAM_PITCH) - ry * TURN_STEP);
+    // Zoom (ZL out, ZR in); looking slows down when zoomed in
+    let camera = camera_get_main(None);
+    let mut fov = get_f32(&CAM_FOV);
+    if !camera.is_null() && fov > 0.0 {
+        if pad_is_button(BUTTON_ZL, None) { fov += ZOOM_SPEED * dt; }
+        if pad_is_button(BUTTON_ZR, None) { fov -= ZOOM_SPEED * dt; }
+        fov = fov.clamp(5.0, 150.0);
+        set_f32(&CAM_FOV, fov);
+        camera_set_fov(camera, fov, None);
+    }
+    let saved_fov = get_f32(&SAVED_FOV);
+    let zoom = if fov > 0.0 && saved_fov > 0.0 { fov / saved_fov } else { 1.0 };
+
+    // The player's battle camera invert settings
+    let config = game_config();
+    let invert_x = !config.is_null() && config_battle_reverse_horizontal(config, None);
+    let invert_y = !config.is_null() && config_battle_reverse_vertical(config, None);
+    let turn = TURN_SPEED * zoom * dt;
+    let yaw = wrap360(get_f32(&CAM_YAW) + rx * turn * if invert_x { -1.0 } else { 1.0 });
+    let pitch = (get_f32(&CAM_PITCH) - ry * turn * if invert_y { -1.0 } else { 1.0 }).clamp(-PITCH_LIMIT, PITCH_LIMIT);
 
     let forward = forward_vector(yaw, pitch);
     let (sin_yaw, cos_yaw) = yaw.to_radians().sin_cos();
     let right = V3 { x: cos_yaw, y: 0.0, z: -sin_yaw };
+    let step = MOVE_SPEED * boost * dt;
+    let lift = if pad_is_button(BUTTON_UP, None) { 1.0 } else if pad_is_button(BUTTON_DOWN, None) { -1.0 } else { 0.0 };
 
-    set_f32(&CAM_X, get_f32(&CAM_X) + (forward.x * ly + right.x * lx) * MOVE_STEP);
-    set_f32(&CAM_Y, get_f32(&CAM_Y) + forward.y * ly * MOVE_STEP);
-    set_f32(&CAM_Z, get_f32(&CAM_Z) + (forward.z * ly + right.z * lx) * MOVE_STEP);
+    set_f32(&CAM_X, get_f32(&CAM_X) + (forward.x * ly + right.x * lx) * step);
+    set_f32(&CAM_Y, get_f32(&CAM_Y) + (forward.y * ly + lift) * step);
+    set_f32(&CAM_Z, get_f32(&CAM_Z) + (forward.z * ly + right.z * lx) * step);
     set_f32(&CAM_YAW, yaw);
     set_f32(&CAM_PITCH, pitch);
+
+    if !camera.is_null() {
+        let transform = component_get_transform(camera, None);
+        if !transform.is_null() {
+            let position = V3 { x: get_f32(&CAM_X), y: get_f32(&CAM_Y), z: get_f32(&CAM_Z) };
+            transform_set_position(transform, position, None);
+            transform_set_euler(transform, V3 { x: pitch, y: yaw, z: 0.0 }, None);
+        }
+    }
 }
 
 #[unity::hook("Combat", "BaseCameraController", "SetFollowLookupPos", 2)]
